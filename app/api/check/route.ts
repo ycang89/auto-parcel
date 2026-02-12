@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
+// Force dynamic rendering for this API route
+export const dynamic = 'force-dynamic'
+
 async function getGoogleSheetData() {
   // Validate environment variables
   if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
