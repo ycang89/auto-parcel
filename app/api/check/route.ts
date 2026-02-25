@@ -1,33 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager'
 
 // Force dynamic rendering for this API route
 export const dynamic = 'force-dynamic'
 
+// Cache for secrets to avoid repeated AWS API calls
+let secretsCache: {
+  GOOGLE_SERVICE_ACCOUNT_EMAIL?: string
+  GOOGLE_PRIVATE_KEY?: string
+  GOOGLE_SHEET_ID?: string
+} | null = null
+
+async function loadSecretsFromAWS() {
+  // Return cached secrets if available
+  if (secretsCache) {
+    return secretsCache
+  }
+
+  try {
+    console.log('process.env.AWS_REGION', process.env.AWS_REGION)
+    // Initialize AWS Secrets Manager client
+    const client = new SecretsManagerClient({
+      region: process.env.AWS_REGION || 'us-east-1',
+    })
+
+    // Get secret names from environment variables or use defaults
+    const secretNames = {
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: process.env.AWS_SECRET_NAME_GOOGLE_SERVICE_ACCOUNT_EMAIL || 'GOOGLE_SERVICE_ACCOUNT_EMAIL',
+      GOOGLE_PRIVATE_KEY: process.env.AWS_SECRET_NAME_GOOGLE_PRIVATE_KEY || 'GOOGLE_PRIVATE_KEY',
+      GOOGLE_SHEET_ID: process.env.AWS_SECRET_NAME_GOOGLE_SHEET_ID || 'GOOGLE_SHEET_ID',
+    }
+
+    // Fetch all three secrets in parallel
+    const [emailResponse, keyResponse, sheetIdResponse] = await Promise.all([
+      client.send(new GetSecretValueCommand({ SecretId: secretNames.GOOGLE_SERVICE_ACCOUNT_EMAIL })),
+      client.send(new GetSecretValueCommand({ SecretId: secretNames.GOOGLE_PRIVATE_KEY })),
+      client.send(new GetSecretValueCommand({ SecretId: secretNames.GOOGLE_SHEET_ID })),
+    ])
+
+    // Extract secret values
+    const getSecretValue = (response: any): string => {
+      if (response.SecretString) {
+        return response.SecretString
+      } else if (response.SecretBinary) {
+        return Buffer.from(response.SecretBinary).toString('utf-8')
+      } else {
+        throw new Error('Secret value is empty')
+      }
+    }
+
+    // Cache the secrets
+    secretsCache = {
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: getSecretValue(emailResponse).trim(),
+      GOOGLE_PRIVATE_KEY: getSecretValue(keyResponse).trim(),
+      GOOGLE_SHEET_ID: getSecretValue(sheetIdResponse).trim(),
+    }
+
+    return secretsCache
+  } catch (error: any) {
+    console.error('Error loading secrets from AWS Secrets Manager:', error)
+    throw new Error(`Failed to load secrets from AWS Secrets Manager: ${error.message}`)
+  }
+}
+
 async function getGoogleSheetData() {
+  // Load secrets from AWS Secrets Manager
+  const secrets = await loadSecretsFromAWS()
+
   // Validate environment variables
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_EMAIL is not set in environment variables')
+  if (!secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_EMAIL is not set in AWS Secrets Manager')
   }
-  if (!process.env.GOOGLE_PRIVATE_KEY) {
-    throw new Error('GOOGLE_PRIVATE_KEY is not set in environment variables')
+  if (!secrets.GOOGLE_PRIVATE_KEY) {
+    throw new Error('GOOGLE_PRIVATE_KEY is not set in AWS Secrets Manager')
   }
-  if (!process.env.GOOGLE_SHEET_ID) {
-    throw new Error('GOOGLE_SHEET_ID is not set in environment variables')
+  if (!secrets.GOOGLE_SHEET_ID) {
+    throw new Error('GOOGLE_SHEET_ID is not set in AWS Secrets Manager')
   }
 
   try {
     // Initialize Google Sheets API
     const auth = new google.auth.GoogleAuth({
       credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        private_key: secrets.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     })
 
     const sheets = google.sheets({ version: 'v4', auth })
-    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const spreadsheetId = secrets.GOOGLE_SHEET_ID
 
     // Read the sheet data
     const response = await sheets.spreadsheets.values.get({
@@ -41,7 +104,8 @@ async function getGoogleSheetData() {
 
     // Provide more specific error messages
     if (error.code === 403) {
-      const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+      const secrets = await loadSecretsFromAWS()
+      const serviceAccountEmail = secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL
       throw new Error(
         `Permission denied (403). Make sure:\n` +
         `1. The Google Sheet is shared with: ${serviceAccountEmail}\n` +
