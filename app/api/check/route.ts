@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
+import { secret } from '@aws-amplify/backend';
 
 // Force dynamic rendering for this API route
 export const dynamic = 'force-dynamic'
 
 async function getGoogleSheetData() {
   // Validate environment variables
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+  if (!secret('GOOGLE_SERVICE_ACCOUNT_EMAIL')) {
     throw new Error('GOOGLE_SERVICE_ACCOUNT_EMAIL is not set in environment variables')
   }
-  if (!process.env.GOOGLE_PRIVATE_KEY) {
+  if (!secret('GOOGLE_PRIVATE_KEY')) {
     throw new Error('GOOGLE_PRIVATE_KEY is not set in environment variables')
   }
-  if (!process.env.GOOGLE_SHEET_ID) {
+  if (!secret('GOOGLE_SHEET_ID')) {
     throw new Error('GOOGLE_SHEET_ID is not set in environment variables')
   }
 
@@ -20,14 +21,14 @@ async function getGoogleSheetData() {
     // Initialize Google Sheets API
     const auth = new google.auth.GoogleAuth({
       credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: secret('GOOGLE_SERVICE_ACCOUNT_EMAIL'),
+        private_key: secret('GOOGLE_PRIVATE_KEY').replace(/\\n/g, '\n'),
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     })
 
     const sheets = google.sheets({ version: 'v4', auth })
-    const spreadsheetId = process.env.GOOGLE_SHEET_ID
+    const spreadsheetId = secret('GOOGLE_SHEET_ID')
 
     // Read the sheet data
     const response = await sheets.spreadsheets.values.get({
@@ -41,7 +42,7 @@ async function getGoogleSheetData() {
 
     // Provide more specific error messages
     if (error.code === 403) {
-      const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+      const serviceAccountEmail = secret('GOOGLE_SERVICE_ACCOUNT_EMAIL')
       throw new Error(
         `Permission denied (403). Make sure:\n` +
         `1. The Google Sheet is shared with: ${serviceAccountEmail}\n` +
